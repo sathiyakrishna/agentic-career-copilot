@@ -35,15 +35,26 @@ from agents.resume_agent import (
     create_resume_docx,
 )
 
+# =========================================================
+# AUTOGEN ORCHESTRATION
+# =========================================================
+
+from backend.orchestration.career_dispatcher import (
+    dispatch_career_request,
+)
+
 
 # =========================================================
-# APP
+# FASTAPI APP
 # =========================================================
 
 app = FastAPI(
-    title="Agentic Career Copilot API",
-    description="Backend API for the Agentic Career Copilot",
-    version="0.3.0",
+    title="Jobnext.ai API",
+    description=(
+        "Agentic AI Career Copilot API powered by "
+        "RAG, specialist agents and AutoGen orchestration."
+    ),
+    version="0.4.0",
 )
 
 
@@ -59,6 +70,11 @@ class ResumeTailorRequest(BaseModel):
     job_description: str
 
 
+class CareerRequest(BaseModel):
+    user_request: str
+    job_description: str | None = None
+
+
 # =========================================================
 # ROOT
 # =========================================================
@@ -67,14 +83,15 @@ class ResumeTailorRequest(BaseModel):
 def root():
 
     return {
-        "product": "Agentic Career Copilot",
-        "version": "0.3.0",
+        "product": "Jobnext.ai",
+        "version": "0.4.0",
         "status": "running",
+        "architecture": "Agentic Career Copilot",
     }
 
 
 # =========================================================
-# HEALTH
+# HEALTH CHECK
 # =========================================================
 
 @app.get("/health")
@@ -127,12 +144,20 @@ async def upload_resume(
     file: UploadFile = File(...)
 ):
 
+    # -----------------------------------------------------
+    # Validate file
+    # -----------------------------------------------------
+
     if file.content_type != "application/pdf":
 
         raise HTTPException(
             status_code=400,
             detail="Only PDF resumes are supported."
         )
+
+    # -----------------------------------------------------
+    # Resume storage path
+    # -----------------------------------------------------
 
     resume_path = Path(
         "data/resume/master_resume.pdf"
@@ -145,6 +170,10 @@ async def upload_resume(
 
     try:
 
+        # -------------------------------------------------
+        # Save PDF
+        # -------------------------------------------------
+
         with open(
             resume_path,
             "wb"
@@ -154,6 +183,10 @@ async def upload_resume(
                 file.file,
                 buffer
             )
+
+        # -------------------------------------------------
+        # Extract resume
+        # -------------------------------------------------
 
         resume_text = load_master_resume()
 
@@ -167,7 +200,15 @@ async def upload_resume(
                 )
             )
 
+        # -------------------------------------------------
+        # Resume version
+        # -------------------------------------------------
+
         resume_version = get_resume_hash()
+
+        # -------------------------------------------------
+        # RAG indexing
+        # -------------------------------------------------
 
         chunk_count = index_resume(
             resume_text,
@@ -236,6 +277,10 @@ def analyze_job(
 
     try:
 
+        # -------------------------------------------------
+        # Candidate knowledge
+        # -------------------------------------------------
+
         resume_text = load_master_resume()
 
         resume_version = get_resume_hash()
@@ -244,6 +289,10 @@ def analyze_job(
             resume_text,
             resume_version
         )
+
+        # -------------------------------------------------
+        # RAG evidence
+        # -------------------------------------------------
 
         evidence = retrieve_resume_evidence(
             job_description,
@@ -259,6 +308,10 @@ def analyze_job(
                     "could be retrieved."
                 )
             )
+
+        # -------------------------------------------------
+        # Fit Agent
+        # -------------------------------------------------
 
         fit_result = run_fit_agent(
             job_description,
@@ -295,7 +348,7 @@ def analyze_job(
 
 
 # =========================================================
-# TAILOR RESUME — JSON PREVIEW
+# TAILORED RESUME — JSON
 # =========================================================
 
 @app.post("/api/resume/tailor")
@@ -326,9 +379,9 @@ def tailor_resume(
 
     try:
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # Candidate knowledge
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         resume_text = load_master_resume()
 
@@ -339,9 +392,9 @@ def tailor_resume(
             resume_version
         )
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # RAG
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         evidence = retrieve_resume_evidence(
             job_description,
@@ -358,18 +411,18 @@ def tailor_resume(
                 )
             )
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # Fit Agent
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         fit_result = run_fit_agent(
             job_description,
             evidence
         )
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # Resume Agent
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         tailored_resume = run_resume_agent(
             job_description,
@@ -377,10 +430,6 @@ def tailor_resume(
             evidence,
             fit_result,
         )
-
-        # ---------------------------------------------
-        # Response
-        # ---------------------------------------------
 
         return {
             "resume_version":
@@ -443,9 +492,9 @@ def download_tailored_resume(
 
     try:
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # Candidate knowledge
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         resume_text = load_master_resume()
 
@@ -456,9 +505,9 @@ def download_tailored_resume(
             resume_version
         )
 
-        # ---------------------------------------------
-        # Retrieve evidence
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # RAG evidence
+        # -------------------------------------------------
 
         evidence = retrieve_resume_evidence(
             job_description,
@@ -475,18 +524,18 @@ def download_tailored_resume(
                 )
             )
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # Fit Agent
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         fit_result = run_fit_agent(
             job_description,
             evidence
         )
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # Resume Agent
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         tailored_resume = run_resume_agent(
             job_description,
@@ -495,19 +544,15 @@ def download_tailored_resume(
             fit_result,
         )
 
-        # ---------------------------------------------
-        # Generate DOCX
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # DOCX
+        # -------------------------------------------------
 
         docx_file = create_resume_docx(
             tailored_resume
         )
 
         docx_bytes = docx_file.getvalue()
-
-        # ---------------------------------------------
-        # Download response
-        # ---------------------------------------------
 
         return StreamingResponse(
             BytesIO(docx_bytes),
@@ -533,4 +578,60 @@ def download_tailored_resume(
         raise HTTPException(
             status_code=500,
             detail=str(error)
+        )
+
+
+# =========================================================
+# AUTOGEN CAREER ORCHESTRATOR
+# =========================================================
+
+@app.post("/api/career")
+async def career_orchestrator(
+    request: CareerRequest
+):
+
+    user_request = (
+        request.user_request.strip()
+    )
+
+    if not user_request:
+
+        raise HTTPException(
+            status_code=400,
+            detail="User request cannot be empty."
+        )
+
+    try:
+
+        # -------------------------------------------------
+        # AutoGen
+        #
+        # User intent
+        #     ↓
+        # Career Orchestrator
+        #     ↓
+        # Career Dispatcher
+        #     ↓
+        # Specialist workflow
+        # -------------------------------------------------
+
+        result = await dispatch_career_request(
+            user_request=user_request,
+            job_description=request.job_description,
+        )
+
+        return result
+
+    except ValueError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
         )
