@@ -7,65 +7,30 @@ from rag.candidate_knowledge import (
 )
 
 from agents.fit_agent import run_fit_agent
-from agents.resume_agent import (
-    run_resume_agent,
-    create_resume_docx,
-)
+from agents.resume_agent import run_resume_agent
 
 
 # =========================================================
 # FIT WORKFLOW
 # =========================================================
 
-def execute_fit_workflow(
-    job_description: str
-):
-    """
-    Execute the Jobnext FIT capability.
-
-    Flow:
-    Resume
-        ↓
-    RAG
-        ↓
-    Evidence
-        ↓
-    Fit Agent
-        ↓
-    Structured analysis
-    """
+def execute_fit_workflow(job_description: str):
 
     job_description = job_description.strip()
 
     if not job_description:
-        raise ValueError(
-            "Job description cannot be empty."
-        )
+        raise ValueError("Job description cannot be empty.")
 
     if not resume_exists():
-        raise ValueError(
-            "No master resume is available."
-        )
-
-    # ---------------------------------------------
-    # Load candidate knowledge
-    # ---------------------------------------------
+        raise ValueError("No master resume is available.")
 
     resume_text = load_master_resume()
     resume_version = get_resume_hash()
-
-    # ---------------------------------------------
-    # Ensure RAG index exists
-    # ---------------------------------------------
 
     chunk_count = index_resume(
         resume_text,
         resume_version
     )
-
-    # ---------------------------------------------
-    # Retrieve relevant evidence
-    # ---------------------------------------------
 
     evidence = retrieve_resume_evidence(
         job_description,
@@ -77,18 +42,10 @@ def execute_fit_workflow(
             "No relevant resume evidence found."
         )
 
-    # ---------------------------------------------
-    # Fit Agent
-    # ---------------------------------------------
-
     fit_result = run_fit_agent(
         job_description,
         evidence
     )
-
-    # ---------------------------------------------
-    # Workflow response
-    # ---------------------------------------------
 
     return {
         "capability": "FIT",
@@ -104,57 +61,23 @@ def execute_fit_workflow(
 # RESUME WORKFLOW
 # =========================================================
 
-def execute_resume_workflow(
-    job_description: str
-):
-    """
-    Execute the Jobnext RESUME capability.
-
-    Flow:
-    Master Resume
-        ↓
-    RAG
-        ↓
-    Verified Evidence
-        ↓
-    Fit Agent
-        ↓
-    Resume Agent
-        ↓
-    Tailored Resume JSON
-    """
+def execute_resume_workflow(job_description: str):
 
     job_description = job_description.strip()
 
     if not job_description:
-        raise ValueError(
-            "Job description cannot be empty."
-        )
+        raise ValueError("Job description cannot be empty.")
 
     if not resume_exists():
-        raise ValueError(
-            "No master resume is available."
-        )
-
-    # ---------------------------------------------
-    # Load master resume
-    # ---------------------------------------------
+        raise ValueError("No master resume is available.")
 
     resume_text = load_master_resume()
     resume_version = get_resume_hash()
-
-    # ---------------------------------------------
-    # Ensure resume is indexed
-    # ---------------------------------------------
 
     chunk_count = index_resume(
         resume_text,
         resume_version
     )
-
-    # ---------------------------------------------
-    # Retrieve verified candidate evidence
-    # ---------------------------------------------
 
     evidence = retrieve_resume_evidence(
         job_description,
@@ -166,18 +89,10 @@ def execute_resume_workflow(
             "No relevant resume evidence found."
         )
 
-    # ---------------------------------------------
-    # Run FIT analysis first
-    # ---------------------------------------------
-
     fit_result = run_fit_agent(
         job_description,
         evidence
     )
-
-    # ---------------------------------------------
-    # Run Resume Agent
-    # ---------------------------------------------
 
     tailored_resume = run_resume_agent(
         job_description=job_description,
@@ -185,10 +100,6 @@ def execute_resume_workflow(
         evidence=evidence,
         fit_result=fit_result,
     )
-
-    # ---------------------------------------------
-    # Workflow response
-    # ---------------------------------------------
 
     return {
         "capability": "RESUME",

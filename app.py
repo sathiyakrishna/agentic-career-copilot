@@ -45,6 +45,9 @@ from backend.orchestration.career_workflow import (
 
 load_dotenv()
 
+# Orchestration layer
+from backend.orchestration.career_workflow import execute_fit_workflow, execute_resume_workflow
+
 st.set_page_config(
     page_title="Agentic Career Copilot",
     page_icon="💼",
