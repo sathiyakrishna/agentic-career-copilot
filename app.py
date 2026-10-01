@@ -1,7 +1,12 @@
 import streamlit as st
+
 from dotenv import load_dotenv
 
-# RAG layer
+
+# =========================================================
+# RAG LAYER
+# =========================================================
+
 from rag.candidate_knowledge import (
     resume_exists,
     save_master_resume,
@@ -11,12 +16,26 @@ from rag.candidate_knowledge import (
     retrieve_resume_evidence,
 )
 
-# Agent layer
+
+# =========================================================
+# AGENT LAYER
+# =========================================================
+
 from agents.fit_agent import run_fit_agent
 
 from agents.resume_agent import (
     run_resume_agent,
     create_resume_docx,
+)
+
+
+# =========================================================
+# ORCHESTRATION LAYER
+# =========================================================
+
+from backend.orchestration.career_workflow import (
+    execute_fit_workflow,
+    execute_resume_workflow,
 )
 
 
@@ -533,44 +552,49 @@ if (
     )
 
     if st.button(
-        "Generate Tailored Resume"
-    ):
+    "Generate Tailored Resume"
+):
+
+    try:
 
         with st.spinner(
-            "Resume Agent is tailoring your resume..."
+            "Career Orchestrator is tailoring your resume..."
         ):
 
-            try:
-
-                tailored_resume = (
-                    run_resume_agent(
-                        st.session_state[
-                            "job_description"
-                        ],
-                        st.session_state[
-                            "resume_text"
-                        ],
-                        st.session_state[
-                            "evidence"
-                        ],
-                        st.session_state[
-                            "fit_result"
-                        ],
-                    )
-                )
-
+            # Run the centralized RESUME workflow
+            resume_result = execute_resume_workflow(
                 st.session_state[
-                    "tailored_resume"
-                ] = tailored_resume
+                    "job_description"
+                ]
+            )
 
-            except Exception as error:
+            # Extract the tailored resume
+            tailored_resume = resume_result[
+                "tailored_resume"
+            ]
 
-                st.error(
-                    f"Resume Agent error: {error}"
-                )
+            # Save result in Streamlit session
+            st.session_state[
+                "tailored_resume"
+            ] = tailored_resume
 
-                st.stop()
+            # Keep workflow metadata available
+            st.session_state[
+                "resume_workflow_result"
+            ] = resume_result
 
+        st.success(
+            "Tailored resume generated successfully."
+        )
+
+    except Exception as error:
+
+        st.error(
+            f"Resume workflow error: {error}"
+        )
+
+        st.stop()
+        
 
 # =========================================================
 # DISPLAY TAILORED RESUME

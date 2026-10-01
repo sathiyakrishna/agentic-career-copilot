@@ -22,6 +22,10 @@ from agents.resume_agent import (
     run_resume_agent,
 )
 
+from agents.search_agent import (
+    run_search_agent,
+)
+
 
 # =========================================================
 # CAREER DISPATCHER
@@ -38,6 +42,7 @@ async def dispatch_career_request(
     V0 capabilities:
     - FIT
     - RESUME
+    - SEARCH
     """
 
     user_request = user_request.strip()
@@ -106,10 +111,7 @@ async def dispatch_career_request(
                 "Upload a resume first."
             )
 
-        # -------------------------------------------------
         # Load master resume
-        # -------------------------------------------------
-
         resume_text = load_master_resume()
 
         if not resume_text.strip():
@@ -118,25 +120,16 @@ async def dispatch_career_request(
                 "extractable text."
             )
 
-        # -------------------------------------------------
         # Resume version
-        # -------------------------------------------------
-
         resume_version = get_resume_hash()
 
-        # -------------------------------------------------
         # Index candidate knowledge
-        # -------------------------------------------------
-
         chunk_count = index_resume(
             resume_text,
             resume_version,
         )
 
-        # -------------------------------------------------
         # Retrieve relevant resume evidence
-        # -------------------------------------------------
-
         evidence = retrieve_resume_evidence(
             job_description,
             top_k=6,
@@ -148,29 +141,19 @@ async def dispatch_career_request(
                 "could be retrieved."
             )
 
-        # -------------------------------------------------
         # Fit Agent
-        # -------------------------------------------------
-
         fit_result = run_fit_agent(
             job_description,
             evidence,
         )
 
-        # -------------------------------------------------
         # Resume Agent
-        # -------------------------------------------------
-
         tailored_resume = run_resume_agent(
             job_description,
             resume_text,
             evidence,
             fit_result,
         )
-
-        # -------------------------------------------------
-        # Return result
-        # -------------------------------------------------
 
         return {
             "routed_to": "RESUME",
@@ -191,6 +174,37 @@ async def dispatch_career_request(
                         [],
                     ),
             },
+        }
+
+    # -----------------------------------------------------
+    # SEARCH
+    # -----------------------------------------------------
+
+    if capability == "SEARCH":
+
+        if not resume_exists():
+            raise ValueError(
+                "No master resume found. "
+                "Upload a resume first."
+            )
+
+        resume_text = load_master_resume()
+
+        if not resume_text.strip():
+            raise ValueError(
+                "The master resume contains no "
+                "extractable text."
+            )
+
+        search_result = run_search_agent(
+            user_request=user_request,
+            resume_text=resume_text,
+        )
+
+        return {
+            "routed_to": "SEARCH",
+            "routing_response": routing_text,
+            "result": search_result,
         }
 
     # -----------------------------------------------------
