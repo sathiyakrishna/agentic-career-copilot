@@ -1,8 +1,9 @@
+
 import json
 
 from dotenv import load_dotenv
 from openai import OpenAI
-
+from agents.job_search_tool import search_jobs
 
 load_dotenv()
 
@@ -97,4 +98,12 @@ Create structured job-search criteria.
         .content
     )
 
-    return json.loads(result_text)
+    search_criteria = json.loads(result_text)
+
+    search_query = search_criteria.get("search_query", user_request)
+
+    live_results = search_jobs(search_query)
+
+    search_criteria["live_search"] = live_results
+
+    return search_criteria

@@ -1,11 +1,7 @@
+import asyncio
+import io
 import streamlit as st
-
 from dotenv import load_dotenv
-
-
-# =========================================================
-# RAG LAYER
-# =========================================================
 
 from rag.candidate_knowledge import (
     resume_exists,
@@ -13,180 +9,392 @@ from rag.candidate_knowledge import (
     get_resume_hash,
     load_master_resume,
     index_resume,
-    retrieve_resume_evidence,
 )
 
-
-# =========================================================
-# AGENT LAYER
-# =========================================================
-
-from agents.fit_agent import run_fit_agent
-
-from agents.resume_agent import (
-    run_resume_agent,
-    create_resume_docx,
-)
-
-
-# =========================================================
-# ORCHESTRATION LAYER
-# =========================================================
+from agents.search_agent import run_search_agent
+from agents.resume_agent import create_resume_docx
 
 from backend.orchestration.career_workflow import (
     execute_fit_workflow,
     execute_resume_workflow,
 )
 
+from backend.orchestration.career_dispatcher import (
+    dispatch_career_request,
+)
 
-# =========================================================
+
+# ============================================================
 # CONFIGURATION
-# =========================================================
+# ============================================================
 
 load_dotenv()
 
-# Orchestration layer
-from backend.orchestration.career_workflow import execute_fit_workflow, execute_resume_workflow
-
 st.set_page_config(
-    page_title="Agentic Career Copilot",
+    page_title="Jobnext.ai | Agentic Career Copilot",
     page_icon="💼",
     layout="wide",
 )
 
 
-# =========================================================
-# HEADER
-# =========================================================
+# ============================================================
+# SESSION STATE
+# ============================================================
 
-st.title("💼 Agentic Career Copilot")
+DEFAULT_STATE = {
+    "job_description": "",
+    "fit_result": None,
+    "resume_result": None,
+    "job_search_response": None,
+    "copilot_response": None,
+}
+
+for key, value in DEFAULT_STATE.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def run_async(coro):
+    """
+    Safely execute an async coroutine from Streamlit.
+    """
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+
+def show_result(data):
+    """
+    Display dictionaries, lists or plain text safely.
+    """
+    if data is None:
+        return
+
+    if isinstance(data, (dict, list)):
+        st.json(data)
+    else:
+        st.write(data)
+
+
+def extract_search_payload(response):
+    """
+    Normalize the dispatcher/search-agent response.
+
+    Expected possibilities include:
+        {"result": {"live_search": {...}}}
+        {"live_search": {...}}
+        {"jobs": [...]}
+    """
+    if not isinstance(response, dict):
+        return response
+
+    result = response.get("result", response)
+
+    if isinstance(result, dict):
+        return result.get("live_search", result)
+
+    return result
+
+
+def display_jobs(search_response):
+    """
+    Render search results as readable job cards.
+    """
+    payload = extract_search_payload(search_response)
+
+    if not isinstance(payload, dict):
+        show_result(payload)
+        return
+
+    jobs = payload.get("jobs", [])
+
+    if not jobs:
+        st.info("No structured job results were returned.")
+        show_result(payload)
+        return
+
+    result_count = payload.get("result_count", len(jobs))
+
+    st.success(f"Found {result_count} job results.")
+
+    for index, job in enumerate(jobs, start=1):
+
+        if not isinstance(job, dict):
+            st.write(job)
+            continue
+
+        title = job.get("title") or "Job Opportunity"
+        url = job.get("url") or job.get("link") or ""
+        snippet = job.get("snippet") or ""
+        source = job.get("source") or "Web"
+
+        with st.container(border=True):
+
+            st.markdown(f"### {index}. {title}")
+
+            if snippet:
+                st.write(snippet)
+
+            st.caption(f"Source: {source}")
+
+            if url:
+                st.link_button(
+                    "View Job →",
+                    url,
+                )
+
+
+def build_docx_download(resume_result):
+    """
+    Try to create the DOCX using the existing resume-agent helper.
+    """
+    try:
+        docx_result = create_resume_docx(resume_result)
+
+        if docx_result is None:
+            return None
+
+        if isinstance(docx_result, bytes):
+            return docx_result
+
+        if isinstance(docx_result, bytearray):
+            return bytes(docx_result)
+
+        if isinstance(docx_result, io.BytesIO):
+            return docx_result.getvalue()
+
+        if hasattr(docx_result, "getvalue"):
+            return docx_result.getvalue()
+
+        if hasattr(docx_result, "save"):
+            buffer = io.BytesIO()
+            docx_result.save(buffer)
+            buffer.seek(0)
+            return buffer.getvalue()
+
+        return None
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.title("💼 Jobnext.ai")
+
+st.subheader("Agentic Career Copilot")
 
 st.caption(
-    "Discover → Evaluate → Tailor → "
-    "Apply → Track → Prepare"
+    "Discover → Evaluate → Tailor → Apply → Track → Prepare"
 )
 
 st.divider()
 
 
-# =========================================================
+# ============================================================
 # CANDIDATE KNOWLEDGE BASE
-# =========================================================
+# ============================================================
 
-st.subheader("Candidate Knowledge Base")
-
+st.header("1. Candidate Knowledge Base")
 
 if resume_exists():
 
-    resume_version = get_resume_hash()
-
-    resume_text = load_master_resume()
-
     st.success("✓ Master resume is active")
 
-    st.caption(
-        f"Resume version ID: {resume_version}"
-    )
+    try:
+        resume_hash = get_resume_hash()
 
-    st.write(
-        f"Resume contains approximately "
-        f"**{len(resume_text.split())} words**."
-    )
+        if resume_hash:
+            st.caption(f"Resume version ID: {resume_hash}")
 
-    with st.expander(
-        "Preview extracted resume"
-    ):
-        st.text(
-            resume_text[:4000]
-        )
+    except Exception:
+        pass
 
-    replace_resume = st.file_uploader(
-        "Replace master resume",
-        type=["pdf"],
-        key="replace_resume",
-    )
+    try:
+        master_resume = load_master_resume()
 
-    if replace_resume:
+        if master_resume:
+            word_count = len(master_resume.split())
 
-        save_master_resume(
-            replace_resume
-        )
-
-        # Clear previous analysis because
-        # candidate evidence has changed
-        for key in [
-            "fit_result",
-            "evidence",
-            "job_description",
-            "resume_text",
-            "tailored_resume",
-        ]:
-            st.session_state.pop(
-                key,
-                None
+            st.write(
+                f"Resume contains approximately "
+                f"**{word_count} words**."
             )
 
-        st.success(
-            "Master resume replaced successfully."
+            with st.expander("Preview extracted resume"):
+                st.text(master_resume)
+
+    except Exception as error:
+        st.warning(
+            f"Resume exists, but preview could not be loaded: {error}"
         )
 
-        st.rerun()
-
+    upload_label = "Replace master resume"
 
 else:
 
-    uploaded_resume = st.file_uploader(
-        "Upload your master resume",
-        type=["pdf"],
+    st.warning(
+        "No master resume found. Upload your resume to activate "
+        "the Candidate Knowledge Base."
     )
 
-    if uploaded_resume:
+    upload_label = "Upload master resume"
 
-        save_master_resume(
-            uploaded_resume
-        )
 
-        st.success(
-            "Master resume saved."
-        )
+uploaded_resume = st.file_uploader(
+    upload_label,
+    type=["pdf"],
+    key="master_resume_upload",
+)
 
-        st.rerun()
+
+if uploaded_resume is not None:
+
+    if st.button(
+        "Save Master Resume",
+        type="primary",
+        key="save_master_resume_button",
+    ):
+
+        try:
+
+            with st.spinner(
+                "Building Candidate Knowledge Base..."
+            ):
+
+                save_master_resume(uploaded_resume)
+
+                resume_text = load_master_resume()
+                resume_version = get_resume_hash()
+
+                if resume_text and resume_version:
+                    index_resume(
+                        resume_text,
+                        resume_version,
+                    )
+
+            st.success(
+                "Master resume saved and indexed successfully."
+            )
+
+            st.rerun()
+
+        except Exception as error:
+
+            st.error(
+                f"Resume upload error: {error}"
+            )
 
 
 st.divider()
 
 
-# =========================================================
-# JOB DESCRIPTION
-# =========================================================
+# ============================================================
+# DISCOVER JOBS
+# ============================================================
 
-st.subheader("Job Description")
+st.header("2. Discover Jobs")
 
-job_description = st.text_area(
-    "Paste the job description",
-    height=300,
+job_search_request = st.text_input(
+    "What jobs are you looking for?",
     placeholder=(
-        "Paste the complete job description here..."
+        "Example: AI Product Manager jobs in Chennai"
     ),
+    key="job_search_request",
 )
 
 
-# =========================================================
-# ANALYZE JOB
-# =========================================================
-
 if st.button(
-    "Analyze Job Fit",
+    "Discover Jobs",
     type="primary",
+    key="discover_jobs_button",
 ):
 
-    if not resume_exists():
+    if not job_search_request.strip():
+
+        st.warning(
+            "Enter the role, skill or location you want to search."
+        )
+
+    elif not resume_exists():
 
         st.warning(
             "Upload your master resume first."
         )
 
-        st.stop()
+    else:
+
+        try:
+
+            with st.spinner(
+                "Search Agent is discovering opportunities..."
+            ):
+
+                resume_text = load_master_resume()
+
+                search_response = run_search_agent(
+                    job_search_request.strip(),
+                    resume_text,
+                )
+
+                st.session_state[
+                    "job_search_response"
+                ] = search_response
+
+        except Exception as error:
+
+            st.error(
+                f"Job search error: {error}"
+            )
+
+
+if st.session_state["job_search_response"] is not None:
+
+    display_jobs(
+        st.session_state["job_search_response"]
+    )
+
+
+st.divider()
+
+
+# ============================================================
+# JOB DESCRIPTION
+# ============================================================
+
+st.header("3. Evaluate Job Fit")
+
+job_description = st.text_area(
+    "Paste the complete job description",
+    value=st.session_state["job_description"],
+    height=300,
+    placeholder=(
+        "Paste the complete job description here..."
+    ),
+    key="job_description_input",
+)
+
+
+# ============================================================
+# FIT ANALYSIS
+# ============================================================
+
+if st.button(
+    "Analyze Job Fit",
+    type="primary",
+    key="analyze_fit_button",
+):
 
     if not job_description.strip():
 
@@ -194,583 +402,289 @@ if st.button(
             "Paste a job description first."
         )
 
-        st.stop()
+    elif not resume_exists():
 
-
-    # -----------------------------------------------------
-    # Load persistent candidate profile
-    # -----------------------------------------------------
-
-    resume_text = load_master_resume()
-
-    resume_version = get_resume_hash()
-
-
-    # -----------------------------------------------------
-    # Build / load RAG index
-    # -----------------------------------------------------
-
-    with st.spinner(
-        "Loading Candidate Knowledge Base..."
-    ):
-
-        chunk_count = index_resume(
-            resume_text,
-            resume_version,
+        st.warning(
+            "Upload your master resume first."
         )
 
-
-    # -----------------------------------------------------
-    # Retrieve relevant candidate evidence
-    # -----------------------------------------------------
-
-    with st.spinner(
-        "Retrieving relevant candidate evidence..."
-    ):
-
-        evidence = retrieve_resume_evidence(
-            job_description,
-            top_k=6,
-        )
-
-
-    if not evidence:
-
-        st.error(
-            "No resume evidence could be retrieved."
-        )
-
-        st.stop()
-
-
-    # -----------------------------------------------------
-    # Fit Agent
-    # -----------------------------------------------------
-
-    with st.spinner(
-        "Fit Agent is analyzing the role..."
-    ):
+    else:
 
         try:
 
-            fit_result = run_fit_agent(
-                job_description,
-                evidence,
+            with st.spinner(
+                "Fit Agent is evaluating your profile..."
+            ):
+
+                fit_result = execute_fit_workflow(
+                    job_description.strip()
+                )
+
+                st.session_state[
+                    "job_description"
+                ] = job_description.strip()
+
+                st.session_state[
+                    "fit_result"
+                ] = fit_result
+
+                st.session_state[
+                    "resume_result"
+                ] = None
+
+            st.success(
+                "Job-fit analysis completed."
             )
 
         except Exception as error:
 
             st.error(
-                f"Fit Agent error: {error}"
+                f"Fit analysis error: {error}"
             )
 
-            st.stop()
 
+if st.session_state["fit_result"] is not None:
 
-    # -----------------------------------------------------
-    # Save state
-    # -----------------------------------------------------
+    st.subheader("Fit Analysis")
 
-    st.session_state[
-        "fit_result"
-    ] = fit_result
-
-    st.session_state[
-        "evidence"
-    ] = evidence
-
-    st.session_state[
-        "job_description"
-    ] = job_description
-
-    st.session_state[
-        "resume_text"
-    ] = resume_text
-
-    st.session_state[
-        "chunk_count"
-    ] = chunk_count
-
-    # New JD = old tailored resume invalid
-    st.session_state.pop(
-        "tailored_resume",
-        None
+    show_result(
+        st.session_state["fit_result"]
     )
 
 
-# =========================================================
-# DISPLAY FIT RESULTS
-# =========================================================
+st.divider()
 
-if "fit_result" in st.session_state:
 
-    fit_result = st.session_state[
-        "fit_result"
-    ]
+# ============================================================
+# TAILORED RESUME
+# ============================================================
 
-    evidence = st.session_state[
-        "evidence"
-    ]
+st.header("4. Tailor Resume")
 
-    st.divider()
+st.write(
+    "Generate a role-specific resume using your master resume, "
+    "retrieved evidence and job-fit analysis."
+)
 
-    st.header("Job Fit Analysis")
 
-
-    # -----------------------------------------------------
-    # Score
-    # -----------------------------------------------------
-
-    score = fit_result.get(
-        "fit_score",
-        0
-    )
-
-    col1, col2 = st.columns(
-        [1, 3]
-    )
-
-    with col1:
-
-        st.metric(
-            "Overall Fit",
-            f"{score}%"
-        )
-
-    with col2:
-
-        st.progress(
-            max(
-                0,
-                min(
-                    score / 100,
-                    1
-                )
-            )
-        )
-
-        st.write(
-            fit_result.get(
-                "summary",
-                ""
-            )
-        )
-
-
-    # -----------------------------------------------------
-    # Strong Matches
-    # -----------------------------------------------------
-
-    st.subheader(
-        "✅ Strong Matches"
-    )
-
-    strong_matches = fit_result.get(
-        "strong_matches",
-        []
-    )
-
-    if strong_matches:
-
-        for match in strong_matches:
-
-            st.markdown(
-                f"**{match.get('requirement', '')}**"
-            )
-
-            st.write(
-                match.get(
-                    "reason",
-                    ""
-                )
-            )
-
-            with st.expander(
-                "View supporting evidence"
-            ):
-
-                st.write(
-                    match.get(
-                        "evidence",
-                        ""
-                    )
-                )
-
-    else:
-
-        st.write(
-            "No strong matches identified."
-        )
-
-
-    # -----------------------------------------------------
-    # Partial Matches
-    # -----------------------------------------------------
-
-    st.subheader(
-        "🟡 Partial Matches"
-    )
-
-    partial_matches = fit_result.get(
-        "partial_matches",
-        []
-    )
-
-    if partial_matches:
-
-        for match in partial_matches:
-
-            st.markdown(
-                f"**{match.get('requirement', '')}**"
-            )
-
-            st.write(
-                match.get(
-                    "reason",
-                    ""
-                )
-            )
-
-            with st.expander(
-                "View supporting evidence"
-            ):
-
-                st.write(
-                    match.get(
-                        "evidence",
-                        ""
-                    )
-                )
-
-    else:
-
-        st.write(
-            "No partial matches identified."
-        )
-
-
-    # -----------------------------------------------------
-    # Gaps
-    # -----------------------------------------------------
-
-    st.subheader(
-        "🔴 Gaps"
-    )
-
-    gaps = fit_result.get(
-        "gaps",
-        []
-    )
-
-    if gaps:
-
-        for gap in gaps:
-
-            st.markdown(
-                f"**{gap.get('requirement', '')}**"
-            )
-
-            st.write(
-                gap.get(
-                    "reason",
-                    ""
-                )
-            )
-
-    else:
-
-        st.write(
-            "No major gaps identified."
-        )
-
-
-    # -----------------------------------------------------
-    # Fit Agent Summary
-    # -----------------------------------------------------
-
-    st.subheader(
-        "Fit Agent Summary"
-    )
-
-    st.info(
-        fit_result.get(
-            "recommendation",
-            ""
-        )
-    )
-
-
-    # -----------------------------------------------------
-    # RAG transparency
-    # -----------------------------------------------------
-
-    with st.expander(
-        "🔎 RAG Evidence Retrieved"
-    ):
-
-        st.caption(
-            f"Resume version: "
-            f"{get_resume_hash()}"
-        )
-
-        st.caption(
-            f"{st.session_state.get('chunk_count', 0)} "
-            f"resume chunks indexed"
-        )
-
-        for number, chunk in enumerate(
-            evidence,
-            start=1
-        ):
-
-            st.markdown(
-                f"**Evidence {number}**"
-            )
-
-            st.write(chunk)
-
-            st.divider()
-
-
-# =========================================================
-# RESUME AGENT
-# =========================================================
-
-if (
-    "fit_result" in st.session_state
-    and
-    "evidence" in st.session_state
+if st.button(
+    "Generate Tailored Resume",
+    type="primary",
+    key="generate_resume_button",
 ):
 
-    st.divider()
+    active_jd = job_description.strip()
 
-    st.header(
-        "Tailored Resume"
-    )
+    if not active_jd:
 
-    st.caption(
-        "Evidence-locked tailoring: existing experience "
-        "can be prioritized or rephrased, but unsupported "
-        "experience cannot be added."
-    )
+        st.warning(
+            "Paste a job description first."
+        )
 
-    if st.button(
-    "Generate Tailored Resume"
-):
+    elif not resume_exists():
 
-    try:
+        st.warning(
+            "Upload your master resume first."
+        )
 
-        with st.spinner(
-            "Career Orchestrator is tailoring your resume..."
-        ):
+    else:
 
-            # Run the centralized RESUME workflow
-            resume_result = execute_resume_workflow(
+        try:
+
+            with st.spinner(
+                "Resume Agent is tailoring your resume..."
+            ):
+
+                resume_result = execute_resume_workflow(
+                    active_jd
+                )
+
                 st.session_state[
                     "job_description"
-                ]
+                ] = active_jd
+
+                st.session_state[
+                    "resume_result"
+                ] = resume_result
+
+            st.success(
+                "Tailored resume generated successfully."
             )
 
-            # Extract the tailored resume
-            tailored_resume = resume_result[
-                "tailored_resume"
-            ]
+        except Exception as error:
 
-            # Save result in Streamlit session
-            st.session_state[
-                "tailored_resume"
-            ] = tailored_resume
+            st.error(
+                f"Resume workflow error: {error}"
+            )
 
-            # Keep workflow metadata available
-            st.session_state[
-                "resume_workflow_result"
-            ] = resume_result
 
-        st.success(
-            "Tailored resume generated successfully."
-        )
+if st.session_state["resume_result"] is not None:
 
-    except Exception as error:
+    st.subheader("Tailored Resume")
 
-        st.error(
-            f"Resume workflow error: {error}"
-        )
-
-        st.stop()
-        
-
-# =========================================================
-# DISPLAY TAILORED RESUME
-# =========================================================
-
-if "tailored_resume" in st.session_state:
-
-    tailored_resume = st.session_state[
-        "tailored_resume"
+    resume_workflow_result = st.session_state[
+        "resume_result"
     ]
 
-    st.success(
-        "Tailored resume generated."
-    )
+    if isinstance(resume_workflow_result, dict):
 
-
-    # -----------------------------------------------------
-    # Summary
-    # -----------------------------------------------------
-
-    st.subheader(
-        "Professional Summary"
-    )
-
-    st.write(
-        tailored_resume.get(
-            "professional_summary",
-            ""
-        )
-    )
-
-
-    # -----------------------------------------------------
-    # Skills
-    # -----------------------------------------------------
-
-    st.subheader(
-        "Skills"
-    )
-
-    skills = tailored_resume.get(
-        "skills",
-        []
-    )
-
-    if skills:
-
-        st.write(
-            " • ".join(skills)
+        tailored_resume = resume_workflow_result.get(
+            "tailored_resume",
+            resume_workflow_result,
         )
 
+    else:
 
-    # -----------------------------------------------------
-    # Experience
-    # -----------------------------------------------------
+        tailored_resume = resume_workflow_result
 
-    st.subheader(
-        "Professional Experience"
-    )
+    show_result(tailored_resume)
 
-    for experience in tailored_resume.get(
-        "experience",
-        []
-    ):
-
-        role = experience.get(
-            "role",
-            ""
-        )
-
-        company = experience.get(
-            "company",
-            ""
-        )
-
-        st.markdown(
-            f"### {role} — {company}"
-        )
-
-        dates = experience.get(
-            "dates",
-            ""
-        )
-
-        if dates:
-
-            st.caption(dates)
-
-        for bullet in experience.get(
-            "bullets",
-            []
-        ):
-
-            st.write(
-                f"• {bullet}"
-            )
-
-
-    # -----------------------------------------------------
-    # Projects
-    # -----------------------------------------------------
-
-    projects = tailored_resume.get(
-        "projects",
-        []
-    )
-
-    if projects:
-
-        st.subheader(
-            "Projects"
-        )
-
-        for project in projects:
-
-            st.markdown(
-                f"### "
-                f"{project.get('name', '')}"
-            )
-
-            for bullet in project.get(
-                "bullets",
-                []
-            ):
-
-                st.write(
-                    f"• {bullet}"
-                )
-
-
-    # -----------------------------------------------------
-    # Unsupported requirements
-    # -----------------------------------------------------
-
-    unsupported = tailored_resume.get(
-        "unsupported_requirements",
-        []
-    )
-
-    if unsupported:
-
-        with st.expander(
-            "⚠️ JD requirements not added to resume"
-        ):
-
-            st.caption(
-                "No supporting evidence was found "
-                "in the candidate knowledge base."
-            )
-
-            for item in unsupported:
-
-                st.write(
-                    f"• {item}"
-                )
-
-
-    # -----------------------------------------------------
-    # DOCX
-    # -----------------------------------------------------
-
-    docx_file = create_resume_docx(
+    docx_bytes = build_docx_download(
         tailored_resume
     )
 
-    st.download_button(
-        label=(
-            "⬇️ Download Tailored Resume (.docx)"
-        ),
-        data=docx_file.getvalue(),
-        file_name="tailored_resume.docx",
-        mime=(
-            "application/vnd.openxmlformats-"
-            "officedocument.wordprocessingml.document"
-        ),
-    )
+    if docx_bytes:
+
+        st.download_button(
+            label="Download Tailored Resume (.docx)",
+            data=docx_bytes,
+            file_name="jobnext_tailored_resume.docx",
+            mime=(
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+            key="download_tailored_resume",
+        )
+
+
+st.divider()
+
+
+# ============================================================
+# AGENTIC CAREER COPILOT
+# ============================================================
+
+st.header("5. Agentic Career Copilot")
+
+st.write(
+    "Ask Jobnext.ai to decide which career capability should "
+    "handle your request."
+)
+
+copilot_request = st.text_area(
+    "What would you like Jobnext.ai to do?",
+    height=120,
+    placeholder=(
+        "Examples:\n"
+        "Find AI Product Manager roles in Chennai\n"
+        "Evaluate my fit for this role\n"
+        "Tailor my resume for this job"
+    ),
+    key="copilot_request",
+)
+
+
+if st.button(
+    "Run Career Copilot",
+    type="primary",
+    key="run_copilot_button",
+):
+
+    if not copilot_request.strip():
+
+        st.warning(
+            "Enter a career request first."
+        )
+
+    elif not resume_exists():
+
+        st.warning(
+            "Upload your master resume first."
+        )
+
+    else:
+
+        try:
+
+            with st.spinner(
+                "Career Orchestrator is routing your request..."
+            ):
+
+                current_jd = (
+                    job_description.strip()
+                    if job_description.strip()
+                    else None
+                )
+
+                copilot_response = run_async(
+                    dispatch_career_request(
+                        user_request=copilot_request.strip(),
+                        job_description=current_jd,
+                    )
+                )
+
+                st.session_state[
+                    "copilot_response"
+                ] = copilot_response
+
+            st.success(
+                "Career request completed."
+            )
+
+        except Exception as error:
+
+            st.error(
+                f"Career Copilot error: {error}"
+            )
+
+
+if st.session_state["copilot_response"] is not None:
+
+    response = st.session_state[
+        "copilot_response"
+    ]
+
+    if isinstance(response, dict):
+
+        routed_to = response.get("routed_to")
+
+        if routed_to:
+            st.info(
+                f"Routed to: {routed_to}"
+            )
+
+        routing_response = response.get(
+            "routing_response"
+        )
+
+        if routing_response:
+            with st.expander(
+                "Orchestrator reasoning"
+            ):
+                st.write(routing_response)
+
+        copilot_result = response.get(
+            "result",
+            response,
+        )
+
+        if routed_to == "SEARCH":
+            display_jobs(response)
+        else:
+            show_result(copilot_result)
+
+    else:
+
+        show_result(response)
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.divider()
+
+st.caption(
+    "Jobnext.ai • Agentic AI Career Platform • "
+    "RAG + AI Agents + AutoGen"
+)
